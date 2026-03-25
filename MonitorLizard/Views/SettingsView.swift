@@ -2,6 +2,12 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage("refreshInterval") private var refreshInterval = Constants.defaultRefreshInterval
+    @AppStorage("disableAutoRefresh") private var disableAutoRefresh = false
+    @AppStorage("refreshOnStartup") private var refreshOnStartup = true
+    @AppStorage("enableQuietHours") private var enableQuietHours = false
+    @AppStorage("quietHoursStart") private var quietHoursStart = Constants.defaultQuietHoursStart
+    @AppStorage("quietHoursEnd") private var quietHoursEnd = Constants.defaultQuietHoursEnd
+    @AppStorage("quietHoursSkipWeekends") private var quietHoursSkipWeekends = true
     @AppStorage("sortNonSuccessFirst") private var sortNonSuccessFirst = false
     @AppStorage("showReviewPRs") private var showReviewPRs = true
     @AppStorage("enableSounds") private var enableSounds = true
@@ -10,12 +16,21 @@ struct SettingsView: View {
     @AppStorage("showNotifications") private var showNotifications = true
     @AppStorage("enableInactiveBranchDetection") private var enableInactiveBranchDetection = false
     @AppStorage("inactiveBranchThresholdDays") private var inactiveBranchThresholdDays = Constants.defaultInactiveBranchThreshold
+    @AppStorage("hideInactivePRs") private var hideInactivePRs = false
+    @AppStorage("useFloatingWindow") private var useFloatingWindow = false
+
+    @StateObject private var monitoredUsersService = MonitoredUsersService.shared
 
     var body: some View {
         TabView {
             generalSettings
                 .tabItem {
                     Label("General", systemImage: "gear")
+                }
+
+            usersSettings
+                .tabItem {
+                    Label("Users", systemImage: "person.2")
                 }
 
             notificationSettings
@@ -32,6 +47,8 @@ struct SettingsView: View {
         .padding()
     }
 
+    // MARK: - General
+
     private var generalSettings: some View {
         Form {
             Section {
@@ -39,20 +56,73 @@ struct SettingsView: View {
                     Text("Refresh Interval")
                         .font(.headline)
 
-                    HStack {
-                        Slider(value: Binding(
-                            get: { Double(refreshInterval) },
-                            set: { refreshInterval = Int($0) }
-                        ), in: Double(Constants.minRefreshInterval)...Double(Constants.maxRefreshInterval), step: Double(Constants.refreshIntervalStep))
+                    Toggle("Disable auto refresh", isOn: $disableAutoRefresh)
+                        .help("Only refresh manually via the refresh button")
 
-                        Text("\(refreshInterval)s")
-                            .frame(width: 50, alignment: .trailing)
+                    Toggle("Refresh on startup", isOn: $refreshOnStartup)
+                        .help("When off, uses cached data on launch and waits for the next scheduled refresh")
+
+                    if !disableAutoRefresh {
+                        HStack {
+                            Slider(value: Binding(
+                                get: { Double(min(refreshInterval, Constants.maxRefreshInterval)) },
+                                set: { refreshInterval = max(Constants.minRefreshInterval, Int($0)) }
+                            ), in: Double(Constants.minRefreshInterval)...Double(Constants.maxRefreshInterval), step: Double(Constants.refreshIntervalStep))
+
+                            TextField("", value: $refreshInterval, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 55)
+                                .multilineTextAlignment(.trailing)
+                                .onSubmit {
+                                    if refreshInterval < Constants.minRefreshInterval {
+                                        refreshInterval = Constants.minRefreshInterval
+                                    }
+                                }
+
+                            Text("s")
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("How often to check for PR status updates")
+                            .font(.caption)
                             .foregroundColor(.secondary)
-                    }
 
-                    Text("How often to check for PR status updates")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        Divider()
+
+                        Toggle("Quiet hours", isOn: $enableQuietHours)
+                            .help("Pause auto refresh during specified hours")
+
+                        if enableQuietHours {
+                            HStack(spacing: 8) {
+                                Text("Pause from")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Picker("", selection: $quietHoursStart) {
+                                    ForEach(0..<24, id: \.self) { hour in
+                                        Text(String(format: "%02d:00", hour)).tag(hour)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 80)
+                                Text("to")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Picker("", selection: $quietHoursEnd) {
+                                    ForEach(0..<24, id: \.self) { hour in
+                                        Text(String(format: "%02d:00", hour)).tag(hour)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 80)
+                            }
+
+                            Toggle("Also pause on weekends", isOn: $quietHoursSkipWeekends)
+
+                            Text("Auto refresh is paused during quiet hours. You can still refresh manually.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
                 .padding(.vertical, 8)
             }
@@ -92,11 +162,31 @@ struct SettingsView: View {
                                 in: Constants.minInactiveBranchThreshold...Constants.maxInactiveBranchThreshold)
                             .padding(.top, 4)
 
-                        Text("PRs not updated for \(inactiveBranchThresholdDays) days will show as inactive")
+                        Toggle("Hide inactive PRs", isOn: $hideInactivePRs)
+                            .help("Completely hide PRs that are inactive instead of just marking them")
+
+                        Text("PRs not updated for \(inactiveBranchThresholdDays) days will \(hideInactivePRs ? "be hidden" : "show as inactive")")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.top, 4)
                     }
+                }
+                .padding(.vertical, 8)
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Keep as floating window", isOn: $useFloatingWindow)
+                        .help("Show MonitorLizard as a floating window instead of a menu bar dropdown")
+                        .onChange(of: useFloatingWindow) { _, newValue in
+                            if !newValue {
+                                WindowManager.shared.destroyFloatingWindow()
+                            }
+                        }
+
+                    Text("Show as a draggable floating window. Close the window to return to menu bar mode.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 8)
             }
@@ -117,8 +207,281 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    // MARK: - Users
+
+    @State private var selectedSettingsUserId: UUID?
+    @State private var showAddUser = false
+    @State private var newUsername = ""
+    @State private var newDisplayName = ""
+    @State private var newIgnoredRepo = ""
+    @State private var newCheckPattern = ""
+    @State private var newCheckRepo = "*"
+
+    private var selectedSettingsUser: MonitoredUser? {
+        monitoredUsersService.users.first { $0.id == selectedSettingsUserId }
+    }
+
+    private var usersSettings: some View {
+        HSplitView {
+            // Left: user list
+            VStack(spacing: 0) {
+                List(monitoredUsersService.users, selection: $selectedSettingsUserId) { user in
+                    HStack {
+                        Text(user.label)
+                        if user.isMe {
+                            Text("(you)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .tag(user.id)
+                }
+                .listStyle(.sidebar)
+
+                Divider()
+
+                HStack {
+                    Button(action: { showAddUser = true }) {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add a GitHub user to monitor")
+
+                    Button(action: {
+                        if let id = selectedSettingsUserId {
+                            monitoredUsersService.removeUser(id: id)
+                            selectedSettingsUserId = monitoredUsersService.users.first?.id
+                        }
+                    }) {
+                        Image(systemName: "minus")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedSettingsUser?.isMe == true || selectedSettingsUserId == nil)
+                    .help("Remove selected user")
+
+                    Spacer()
+                }
+                .padding(8)
+            }
+            .frame(minWidth: 140, maxWidth: 180)
+
+            // Right: selected user config
+            if let user = selectedSettingsUser {
+                userDetailView(user: user)
+            } else {
+                Text("Select a user")
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            if selectedSettingsUserId == nil {
+                selectedSettingsUserId = monitoredUsersService.users.first?.id
+            }
+        }
+        .sheet(isPresented: $showAddUser) {
+            addUserSheet
+        }
+    }
+
+    private func userDetailView(user: MonitoredUser) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Username
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Username")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if user.isMe {
+                        Text("@me (authenticated user)")
+                            .font(.body)
+                    } else {
+                        Text(user.username)
+                            .font(.body)
+                    }
+                }
+
+                // Display Name
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Display Name")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField("Optional label for tab", text: Binding(
+                        get: { user.displayName ?? "" },
+                        set: { newValue in
+                            var updated = user
+                            updated.displayName = newValue.isEmpty ? nil : newValue
+                            monitoredUsersService.updateUser(updated)
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                Divider()
+
+                // Ignored Repositories
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Ignored Repositories")
+                        .font(.headline)
+                    Text("PRs from these repos won't be shown.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    ForEach(Array(user.ignoredRepos.enumerated()), id: \.offset) { index, repo in
+                        HStack {
+                            TextField("owner/repo", text: Binding(
+                                get: { repo },
+                                set: { newValue in
+                                    var updated = user
+                                    updated.ignoredRepos[index] = newValue
+                                    monitoredUsersService.updateUser(updated)
+                                }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body)
+                            Button(action: {
+                                var updated = user
+                                updated.ignoredRepos.remove(at: index)
+                                monitoredUsersService.updateUser(updated)
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    HStack {
+                        TextField("owner/repo", text: $newIgnoredRepo)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addIgnoredRepo(for: user) }
+                        Button("Add") { addIgnoredRepo(for: user) }
+                            .disabled(newIgnoredRepo.isEmpty)
+                    }
+                }
+
+                Divider()
+
+                // Ignored CI Checks
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Ignored CI Checks")
+                        .font(.headline)
+                    Text("Failing checks matching these patterns are excluded from status calculation. Supports * wildcard.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    ForEach(Array(user.ignoredChecks.enumerated()), id: \.element.id) { index, rule in
+                        HStack {
+                            TextField("Pattern", text: Binding(
+                                get: { rule.pattern },
+                                set: { newValue in
+                                    var updated = user
+                                    updated.ignoredChecks[index].pattern = newValue
+                                    monitoredUsersService.updateUser(updated)
+                                }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body)
+                            TextField("Repo", text: Binding(
+                                get: { rule.repository },
+                                set: { newValue in
+                                    var updated = user
+                                    updated.ignoredChecks[index].repository = newValue.isEmpty ? "*" : newValue
+                                    monitoredUsersService.updateUser(updated)
+                                }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .frame(width: 140)
+                            Button(action: {
+                                var updated = user
+                                updated.ignoredChecks.remove(at: index)
+                                monitoredUsersService.updateUser(updated)
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    HStack {
+                        TextField("Pattern (e.g. codecov/*)", text: $newCheckPattern)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Repo (* for all)", text: $newCheckRepo)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 140)
+                        Button("Add") { addIgnoredCheck(for: user) }
+                            .disabled(newCheckPattern.isEmpty)
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func submitAddUser() {
+        let username = newUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else { return }
+        monitoredUsersService.addUser(
+            username: username,
+            displayName: newDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        newUsername = ""
+        newDisplayName = ""
+        showAddUser = false
+    }
+
+    private var addUserSheet: some View {
+        VStack(spacing: 12) {
+            Text("Add Monitored User")
+                .font(.headline)
+            TextField("GitHub username", text: $newUsername)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitAddUser() }
+            TextField("Display name (optional)", text: $newDisplayName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitAddUser() }
+            HStack {
+                Spacer()
+                Button("Cancel") { showAddUser = false }
+                Button("Add") { submitAddUser() }
+                    .disabled(newUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .frame(width: 300)
+    }
+
+    private func addIgnoredRepo(for user: MonitoredUser) {
+        let repo = newIgnoredRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !repo.isEmpty else { return }
+        var updated = user
+        guard !updated.ignoredRepos.contains(repo) else { newIgnoredRepo = ""; return }
+        updated.ignoredRepos.append(repo)
+        monitoredUsersService.updateUser(updated)
+        newIgnoredRepo = ""
+    }
+
+    private func addIgnoredCheck(for user: MonitoredUser) {
+        let pattern = newCheckPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.isEmpty else { return }
+        var updated = user
+        let repoScope = newCheckRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rule = IgnoredCheckRule(pattern: pattern, repository: repoScope.isEmpty ? "*" : repoScope)
+        updated.ignoredChecks.append(rule)
+        monitoredUsersService.updateUser(updated)
+        newCheckPattern = ""
+        newCheckRepo = "*"
+    }
+
+    // MARK: - Notifications
+
     private var notificationSettings: some View {
         Form {
+            refreshLogSection
+
             Section {
                 Toggle("Show notifications", isOn: $showNotifications)
                     .help("Display macOS notifications when watched builds complete")
@@ -189,6 +552,44 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    @StateObject private var refreshLogger = RefreshLogger.shared
+
+    private var refreshLogSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Refresh Log")
+                        .font(.headline)
+                    Spacer()
+                    Button("Clear") {
+                        refreshLogger.clear()
+                    }
+                    .font(.caption)
+                }
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(refreshLogger.logs.isEmpty ? "No logs yet. Logs appear after a refresh." : refreshLogger.logs)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(refreshLogger.logs.isEmpty ? .secondary : .primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .id("logBottom")
+                    }
+                    .frame(height: 150)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(4)
+                    .onChange(of: refreshLogger.logs) { _, _ in
+                        proxy.scrollTo("logBottom", anchor: .bottom)
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+        }
+    }
+
+    // MARK: - About
+
     private var aboutView: some View {
         VStack(spacing: 20) {
             Image(systemName: "lizard")
@@ -249,7 +650,6 @@ struct SettingsView: View {
     }
 }
 
-// Preview
 #if DEBUG
 struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {

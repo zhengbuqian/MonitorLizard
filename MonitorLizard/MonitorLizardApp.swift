@@ -12,6 +12,10 @@ struct MonitorLizardApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(viewModel)
+                .onAppear {
+                    // Restore floating window on first menu open if it was active
+                    WindowManager.shared.restoreFloatingWindowIfNeeded(viewModel: viewModel)
+                }
         } label: {
             MenuBarLabel(showWarningIcon: viewModel.showWarningIcon)
         }

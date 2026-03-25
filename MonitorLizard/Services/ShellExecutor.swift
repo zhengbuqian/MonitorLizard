@@ -20,7 +20,10 @@ enum ShellError: Error {
     }
 }
 
-actor ShellExecutor {
+/// ShellExecutor runs shell commands. Each invocation creates its own
+/// `Process`, so concurrent calls are safe. Marked as `final class`
+/// (not `actor`) to allow true parallelism in task groups.
+final class ShellExecutor: Sendable {
     func execute(command: String, arguments: [String] = [], timeout: TimeInterval = 30, host: String? = nil) async throws -> String {
         let process = Process()
 
@@ -53,24 +56,31 @@ actor ShellExecutor {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        // Launch the process
-        do {
-            try process.run()
-        } catch {
-            throw ShellError.commandNotFound
-        }
+        // Wait for completion without blocking the cooperative thread pool.
+        // terminationHandler must be set BEFORE run() to avoid a race
+        // where the process finishes before the handler is installed.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
 
-        // Wait for completion with timeout
-        let timeoutTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            if process.isRunning {
-                process.terminate()
-                throw ShellError.executionFailed("Command timed out after \(timeout) seconds")
+            do {
+                try process.run()
+            } catch {
+                // Clear the handler so we don't double-resume
+                process.terminationHandler = nil
+                continuation.resume(throwing: ShellError.commandNotFound)
+                return
+            }
+
+            // Timeout: terminate the process if it hasn't finished in time
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if process.isRunning {
+                    process.terminate()
+                }
             }
         }
-
-        process.waitUntilExit()
-        timeoutTask.cancel()
 
         // Read output
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
