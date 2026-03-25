@@ -50,18 +50,38 @@ final class ShellExecutor: Sendable {
 
         process.environment = environment
 
-        // Set up pipes for output and error
+        // Set up pipes for output and error.
+        // Collect data as it arrives via readabilityHandler to avoid
+        // deadlock when output exceeds the pipe buffer (~64KB).
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
+        let outputAccumulator = PipeAccumulator()
+        let errorAccumulator = PipeAccumulator()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty { outputAccumulator.append(data) }
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty { errorAccumulator.append(data) }
+        }
+
         // Wait for completion without blocking the cooperative thread pool.
         // terminationHandler must be set BEFORE run() to avoid a race
         // where the process finishes before the handler is installed.
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        let timedOut = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            var resumed = false
+            let lock = NSLock()
+
             process.terminationHandler = { _ in
-                continuation.resume()
+                lock.lock()
+                guard !resumed else { lock.unlock(); return }
+                resumed = true
+                lock.unlock()
+                continuation.resume(returning: false)
             }
 
             do {
@@ -69,6 +89,9 @@ final class ShellExecutor: Sendable {
             } catch {
                 // Clear the handler so we don't double-resume
                 process.terminationHandler = nil
+                lock.lock()
+                resumed = true
+                lock.unlock()
                 continuation.resume(throwing: ShellError.commandNotFound)
                 return
             }
@@ -76,15 +99,27 @@ final class ShellExecutor: Sendable {
             // Timeout: terminate the process if it hasn't finished in time
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                if process.isRunning {
-                    process.terminate()
-                }
+                lock.lock()
+                guard !resumed else { lock.unlock(); return }
+                resumed = true
+                lock.unlock()
+                process.terminate()
+                continuation.resume(returning: true)
             }
         }
 
-        // Read output
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        // Stop reading handlers and drain remaining data
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+        outputAccumulator.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
+        errorAccumulator.append(errorPipe.fileHandleForReading.readDataToEndOfFile())
+
+        if timedOut {
+            throw ShellError.executionFailed("Command timed out after \(Int(timeout)) seconds")
+        }
+
+        let outputData = outputAccumulator.data
+        let errorData = errorAccumulator.data
 
         // Check exit status
         guard process.terminationStatus == 0 else {
@@ -203,5 +238,24 @@ final class ShellExecutor: Sendable {
         } catch {
             return false
         }
+    }
+}
+
+/// Thread-safe accumulator for pipe data collected via readabilityHandler.
+private final class PipeAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        buffer.append(data)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
     }
 }

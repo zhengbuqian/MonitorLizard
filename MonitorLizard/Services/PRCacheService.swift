@@ -8,6 +8,9 @@ class PRCacheService {
     private let defaults: UserDefaults
     private let cacheKey = "prCacheData"
     private let otherPRsKey = "otherPRsCacheData"
+    /// Hash of the last written data to skip redundant writes.
+    private var lastCacheHash: Int = 0
+    private var lastOtherHash: Int = 0
 
     struct CachedUserData: Codable {
         var rawPRs: [PullRequest]
@@ -23,10 +26,18 @@ class PRCacheService {
             dict[entry.key.uuidString] = CachedUserData(rawPRs: entry.value.raw, unsortedPRs: entry.value.filtered)
         }
         if let data = try? JSONEncoder().encode(codableCache) {
-            defaults.set(data, forKey: cacheKey)
+            let hash = data.hashValue
+            if hash != lastCacheHash {
+                lastCacheHash = hash
+                defaults.set(data, forKey: cacheKey)
+            }
         }
         if let data = try? JSONEncoder().encode(otherPRs) {
-            defaults.set(data, forKey: otherPRsKey)
+            let hash = data.hashValue
+            if hash != lastOtherHash {
+                lastOtherHash = hash
+                defaults.set(data, forKey: otherPRsKey)
+            }
         }
     }
 

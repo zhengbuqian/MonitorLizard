@@ -6,18 +6,20 @@ struct MonitorLizardApp: App {
         let isDemoMode = CommandLine.arguments.contains("--demo-mode")
         return PRMonitorViewModel(isDemoMode: isDemoMode)
     }()
+    @State private var didRestoreFloatingWindowAtLaunch = false
     private let updateService = UpdateService.shared
 
     var body: some Scene {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(viewModel)
-                .onAppear {
-                    // Restore floating window on first menu open if it was active
-                    WindowManager.shared.restoreFloatingWindowIfNeeded(viewModel: viewModel)
-                }
         } label: {
             MenuBarLabel(showWarningIcon: viewModel.showWarningIcon)
+                .task {
+                    guard !didRestoreFloatingWindowAtLaunch else { return }
+                    didRestoreFloatingWindowAtLaunch = true
+                    WindowManager.shared.restoreFloatingWindowIfNeeded(viewModel: viewModel)
+                }
         }
         .menuBarExtraStyle(.window)
 

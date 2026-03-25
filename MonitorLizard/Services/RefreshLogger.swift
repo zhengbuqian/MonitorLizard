@@ -6,6 +6,7 @@ class RefreshLogger: ObservableObject {
     static let shared = RefreshLogger()
 
     @Published var logs: String = ""
+    private var lines: [String] = []
     private let maxLines = 200
 
     private init() {}
@@ -14,20 +15,16 @@ class RefreshLogger: ObservableObject {
         let timestamp = Self.formatter.string(from: Date())
         let line = "[\(timestamp)] \(message)"
         print(line)
-        if !logs.isEmpty { logs += "\n" }
-        logs += line
-        trimIfNeeded()
+        lines.append(line)
+        if lines.count > maxLines {
+            lines.removeFirst(lines.count - maxLines)
+        }
+        logs = lines.joined(separator: "\n")
     }
 
     func clear() {
+        lines.removeAll()
         logs = ""
-    }
-
-    private func trimIfNeeded() {
-        let lines = logs.components(separatedBy: "\n")
-        if lines.count > maxLines {
-            logs = lines.suffix(maxLines).joined(separator: "\n")
-        }
     }
 
     private static let formatter: DateFormatter = {

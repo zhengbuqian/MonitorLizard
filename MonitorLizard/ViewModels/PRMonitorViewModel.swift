@@ -231,7 +231,6 @@ class PRMonitorViewModel: ObservableObject {
             unsortedPullRequests = cache.unsortedPRs.filter { !otherIDs.contains($0.id) }
         }
         applySorting()
-        updateGlobalWarningIcon()
     }
 
     // MARK: - User Selection
@@ -480,7 +479,6 @@ class PRMonitorViewModel: ObservableObject {
         }
 
         applySorting()
-        updateGlobalWarningIcon()
 
         // Reset repo filter if needed
         if selectedRepository != "All Repositories" &&
@@ -566,6 +564,9 @@ class PRMonitorViewModel: ObservableObject {
 
     private func updateGlobalWarningIcon() {
         let anyBadStatus = perUserCache.values.contains { $0.hasFailure }
+        let anyInactive = perUserCache.values.contains { cache in
+            cache.unsortedPRs.contains { $0.buildStatus == .inactive }
+        }
         let meId = monitoredUsersService.users.first(where: { $0.isMe })?.id
         let anyReviewPRs: Bool
         if let meId, let meCache = perUserCache[meId] {
@@ -575,9 +576,10 @@ class PRMonitorViewModel: ObservableObject {
         }
         let otherBadStatus = otherPullRequests.contains { pr in
             pr.buildStatus == .failure || pr.buildStatus == .error ||
-            pr.buildStatus == .conflict || pr.reviewDecision == .changesRequested
+            pr.buildStatus == .conflict || pr.buildStatus == .inactive ||
+            pr.reviewDecision == .changesRequested
         }
-        showWarningIcon = anyBadStatus || anyReviewPRs || otherBadStatus
+        showWarningIcon = anyBadStatus || anyInactive || anyReviewPRs || otherBadStatus
     }
 
     // MARK: - Other PRs
@@ -662,17 +664,7 @@ class PRMonitorViewModel: ObservableObject {
             pullRequests = newPullRequests
         }
 
-        // Update warning icon
-        let allDisplayed = newPullRequests + otherPullRequests
-        let hasBadStatus = allDisplayed.contains { pr in
-            let badBuild = pr.buildStatus == .failure || pr.buildStatus == .error
-                || pr.buildStatus == .conflict || pr.buildStatus == .inactive
-            return badBuild || pr.reviewDecision == .changesRequested
-        }
-        let hasReviewPRs = newPullRequests.contains { pr in
-            pr.type == .reviewing
-        }
-        showWarningIcon = hasBadStatus || hasReviewPRs
+        updateGlobalWarningIcon()
     }
 
     private func sort(_ prs: [PullRequest]) -> [PullRequest] {
